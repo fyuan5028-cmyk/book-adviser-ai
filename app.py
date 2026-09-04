@@ -1,5 +1,6 @@
 import io
 import hmac
+import json
 import math
 import os
 import re
@@ -30,9 +31,34 @@ MODEL_NAME = get_setting("OPENAI_MODEL", "gpt-5.6-luna")
 EMBEDDING_MODEL = get_setting("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 ACCESS_CODE = get_setting("APP_ACCESS_CODE", "")
 MAX_AI_CALLS = int(get_setting("MAX_AI_CALLS_PER_SESSION", "12"))
-KNOWLEDGE_VERSION = 2
+KNOWLEDGE_VERSION = 3
+BUILTIN_LIBRARY_FILE = os.path.join(os.path.dirname(__file__), "knowledge_cards.json")
 
 st.set_page_config(page_title="书籍顾问 AI", page_icon="📚", layout="wide")
+
+
+def load_builtin_cards():
+    """读取可公开发布的提炼型知识卡片，不保存书籍原文。"""
+    if not os.path.exists(BUILTIN_LIBRARY_FILE):
+        return [], []
+    with open(BUILTIN_LIBRARY_FILE, "r", encoding="utf-8") as file:
+        cards = json.load(file)
+    chunks = []
+    for card in cards:
+        chunks.append({
+            "source": card["book"],
+            "location": f"知识卡片：{card['title']}",
+            "text": (
+                f"主题：{card['title']}。核心原则：{card['principle']} "
+                f"适用场景：{card['use_when']} 行动方法：{card['action']} "
+                f"边界提醒：{card['boundary']}"
+            ),
+        })
+    names = list(dict.fromkeys(card["book"] for card in cards))
+    return chunks, names
+
+
+BUILTIN_CHUNKS, BUILTIN_BOOK_NAMES = load_builtin_cards()
 
 
 def show_login():
@@ -264,73 +290,30 @@ if st.session_state.get("knowledge_version") != KNOWLEDGE_VERSION:
     st.session_state.final_answer = ""
 
 
+if BUILTIN_CHUNKS and not st.session_state.book_chunks and API_KEY:
+    try:
+        with st.spinner("正在加载内置书籍知识库……"):
+            st.session_state.book_chunks = add_embeddings(
+                [dict(chunk) for chunk in BUILTIN_CHUNKS]
+            )
+            st.session_state.book_names = list(BUILTIN_BOOK_NAMES)
+    except Exception as error:
+        st.error("内置知识库加载失败：")
+        st.code(str(error))
+
+
 st.title("📚 我的书籍顾问 AI")
-st.caption("上传书籍 → 提出问题 → 顾问追问 → 获得结合书籍内容的行动方案")
+st.caption("提出问题 → 顾问追问 → 获得结合精选书籍知识的行动方案")
 
 with st.sidebar:
-    st.header("第一步：导入书籍")
-    uploaded_files = st.file_uploader(
-        "选择 PDF、TXT 或 EPUB 文件",
-        type=["pdf", "txt", "epub"],
-        accept_multiple_files=True,
-    )
-
-    if st.button("让顾问阅读这些书", use_container_width=True):
-        if not uploaded_files:
-            st.warning("请先选择至少一本书。")
-        else:
-            all_chunks = []
-            successful_names = []
-            errors = []
-
-            with st.spinner("正在读取书籍并建立语义索引……"):
-                for uploaded_file in uploaded_files:
-                    try:
-                        lower_name = uploaded_file.name.lower()
-                        if lower_name.endswith(".pdf"):
-                            file_chunks = read_pdf(uploaded_file)
-                        elif lower_name.endswith(".epub"):
-                            file_chunks = read_epub(uploaded_file)
-                        else:
-                            file_chunks = read_txt(uploaded_file)
-
-                        if file_chunks:
-                            all_chunks.extend(file_chunks)
-                            successful_names.append(uploaded_file.name)
-                        else:
-                            errors.append(f"{uploaded_file.name}：没有提取到文字")
-                    except Exception as error:
-                        errors.append(f"{uploaded_file.name}：{error}")
-
-                if all_chunks:
-                    try:
-                        all_chunks = add_embeddings(all_chunks)
-                    except Exception as error:
-                        errors.append(f"建立语义索引失败：{error}")
-                        all_chunks = []
-                        successful_names = []
-
-            st.session_state.book_chunks = all_chunks
-            st.session_state.book_names = successful_names
-            st.session_state.clarifying_questions = ""
-            st.session_state.final_answer = ""
-
-            if successful_names:
-                st.success(
-                    f"已读取 {len(successful_names)} 本书，并为 {len(all_chunks)} 个文字片段建立语义索引。"
-                )
-            for error_message in errors:
-                st.error(error_message)
-
-    if st.session_state.book_names:
-        st.subheader("已读取")
-        for book_name in st.session_state.book_names:
+    st.header("顾问知识库")
+    if BUILTIN_BOOK_NAMES:
+        st.success(f"已准备 {len(BUILTIN_BOOK_NAMES)} 本精选书籍")
+        for book_name in BUILTIN_BOOK_NAMES:
             st.write(f"• {book_name}")
-
-    st.caption(
-        "支持 PDF、TXT、EPUB。如果 PDF 是扫描图片而不是可复制的文字，"
-        "本版本可能无法读取。"
-    )
+    else:
+        st.warning("暂未找到内置知识卡片文件。")
+    st.caption("书籍由网站管理者统一整理和维护，普通用户只需提出问题。")
     st.divider()
     st.caption(f"本次已使用 {st.session_state.ai_calls}/{MAX_AI_CALLS} 次 AI 请求")
 
@@ -339,11 +322,11 @@ if not API_KEY:
     st.error("没有读取到 API 密钥，请检查 .env 文件。")
 
 if not st.session_state.book_chunks:
-    st.info("请先在左侧上传书籍，然后点击“让顾问阅读这些书”。")
+    st.info("内置知识库正在准备或尚未加载，请稍后刷新网页。")
 else:
     st.success(f"知识库已准备好：{len(st.session_state.book_names)} 本书")
 
-    st.header("第二步：描述你遇到的问题")
+    st.header("第一步：描述你遇到的问题")
     question = st.text_area(
         "发生了什么？",
         height=150,
@@ -400,7 +383,7 @@ else:
         st.subheader("顾问的初步分析与追问")
         st.write(st.session_state.clarifying_questions)
 
-        st.header("第三步：补充信息")
+        st.header("第二步：补充信息")
         extra_information = st.text_area(
             "回答上面的追问，或者补充你认为重要的情况",
             height=180,
