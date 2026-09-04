@@ -41,7 +41,9 @@ def show_login():
     st.write("输入邀请码后即可使用。你不需要填写 API 密钥。")
     entered_code = st.text_input("邀请码", type="password")
     if st.button("进入书籍顾问", type="primary"):
-        if hmac.compare_digest(entered_code, str(ACCESS_CODE)):
+        entered_bytes = entered_code.encode("utf-8")
+        expected_bytes = str(ACCESS_CODE).encode("utf-8")
+        if hmac.compare_digest(entered_bytes, expected_bytes):
             st.session_state.authorized = True
             st.rerun()
         else:
